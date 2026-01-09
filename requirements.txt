@@ -1,0 +1,6 @@
+findspark
+pandas
+matplotlib
+gradio
+pyspark==3.5.1
+setuptools
