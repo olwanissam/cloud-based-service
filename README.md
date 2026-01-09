@@ -15,7 +15,7 @@ This project is a cloud-native data processing service that enables users to per
 * **Process Management:** Linux Systemd
 
 ## 📊 Performance Summary
- Based on experimental evaluations on the cloud platform[cite: 1, 8]:
+ Based on experimental evaluations on the cloud platform:
 
 | Cluster Size | Avg Execution Time (sec) | Speedup | Efficiency |
 | :--- | :--- | :--- | :--- |
@@ -24,7 +24,7 @@ This project is a cloud-native data processing service that enables users to per
 | 4 Machines | 0.66 | 0.97 | 24.3% |
 | 8 Machines | 0.65 | 0.98 | 12.3% |
 
- *Note: For the 1.4 MB test dataset, efficiency decreases beyond 2 workers due to thread management overhead exceeding computation time on virtualized hardware[cite: 4, 8].*
+ *Note: For the 1.4 MB test dataset, efficiency decreases beyond 2 workers due to thread management overhead exceeding computation time on virtualized hardware.*
 
 ## 📖 How to Use
 1. **Access the Service:** Navigate to `http://209.38.219.47:7860`.
