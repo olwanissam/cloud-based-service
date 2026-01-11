@@ -24,7 +24,6 @@ def process_and_benchmark(file_obj):
     file_path = file_obj.name
     results_output = []
     
-    # 1. INITIAL LOAD & DESCRIPTIVE STATISTICS (Req: at least 4)
     spark_stat = SparkSession.builder.master("local[2]").getOrCreate()
     df = spark_stat.read.csv(file_path, header=True, inferSchema=True).dropna()
     
