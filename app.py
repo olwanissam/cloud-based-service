@@ -11,97 +11,105 @@ from pyspark.ml.regression import DecisionTreeRegressor
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.fpm import FPGrowth
 
-os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
-os.environ["SPARK_HOME"] = "/root/spark-3.5.1-bin-hadoop3"
+
+os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64" # should attach relative path of java jdk
+os.environ["SPARK_HOME"] = "/spark/spark-3.5.1-bin-hadoop3" # should attach relative path of spark engine
 findspark.init()
 
-CLOUD_STORAGE = "/root/spark_project/cloud_storage"
+CLOUD_STORAGE = "./cloud_storage"
 os.makedirs(CLOUD_STORAGE, exist_ok=True)
 
 def process_and_benchmark(file_obj):
-    if file_obj is None: return None, None, "No file uploaded."
+    if file_obj is None: return None, None, None, "No file uploaded."
     
     file_path = file_obj.name
-    results_output = []
     
-    spark_stat = SparkSession.builder.master("local[2]").getOrCreate()
-    df = spark_stat.read.csv(file_path, header=True, inferSchema=True).dropna()
-    
-    rows = df.count()
-    cols = len(df.columns)
-    null_counts = df.select([F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in df.columns]).collect()[0].asDict()
-    avg_null = sum(null_counts.values()) / (rows * cols) * 100
-    
-    stats_summary = f"""
-    ### 📊 Dataset Descriptive Statistics
-    - **Total Rows:** {rows}
-    - **Total Columns:** {cols}
-    - **Data Types:** {dict(df.dtypes)}
-    - **Missing Value Percentage:** {avg_null:.2f}%
-    """
-    spark_stat.stop()
+    spark = SparkSession.builder.master("local[2]").appName("StatsEngine").getOrCreate()
+    try:
+        df = spark.read.csv(file_path, header=True, inferSchema=True).dropna()
+        
+        rows = df.count()
+        cols = len(df.columns)
+        null_counts = df.select([F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in df.columns]).collect()[0].asDict()
+        avg_null = (sum(null_counts.values()) / (rows * cols)) * 100
+        
+        unique_sample = str({c: df.select(c).distinct().count() for c in df.columns[:2]})
+
+        stats_df = pd.DataFrame({
+            "Metric": ["Total Rows", "Total Columns", "Null Percentage", "Unique Value Sample"],
+            "Value": [rows, cols, f"{avg_null:.2f}%", unique_sample]
+        })
+        stats_df.to_csv(f"{CLOUD_STORAGE}/descriptive_stats.csv", index=False)
+    finally:
+        spark.stop()
 
     worker_counts = [1, 2, 4, 8]
     exp_results = []
+    fp_display_df = pd.DataFrame()
     
-    for n in worker_counts:
-        spark = SparkSession.builder.master(f"local[{n}]").getOrCreate()
-        
-        # prepare Data
-        numeric_cols = [f for (f, dtype) in df.dtypes if dtype in ("int", "double", "float")]
-        assembler = VectorAssembler(inputCols=numeric_cols[:-1], outputCol="features", handleInvalid="skip")
-        ml_data = assembler.transform(df).select("features", numeric_cols[-1]).cache()
-        
-        start_time = time.time()
-        
-        # First Job: Regression (decision tree) -
-        dt = DecisionTreeRegressor(featuresCol="features", labelCol=numeric_cols[-1])
-        model_reg = dt.fit(ml_data)
-        
-        # Second Job: clustering (KMeans) --
-        kmeans = KMeans().setK(3).setSeed(1)
-        model_km = kmeans.fit(ml_data)
-        
-        # Third Job: Time-Series --
-        summary = df.describe().toPandas()
-        
-        # Fouth job: Frequent Itemsets
-        # Note: We simulate this by grouping a numeric col into 'items'
-        fp_data = df.select(F.array(numeric_cols[0]).alias("items"))
-        fp = FPGrowth(itemsCol="items", minSupport=0.2, minConfidence=0.5)
-        model_fp = fp.fit(fp_data)
-        
-        duration = time.time() - start_time
-        exp_results.append({"Workers (N)": n, "Time (s)": round(duration, 2)})
-        
-        summary.to_csv(f"{CLOUD_STORAGE}/summary_n{n}.csv")
-        
-        spark.stop()
+    numeric_cols = [f for (f, dtype) in df.dtypes if dtype in ("int", "double", "float")]
 
-    report_df = pd.DataFrame(exp_results)
-    t1 = report_df.iloc[0]['Time (s)']
-    report_df['Speedup'] = t1 / report_df['Time (s)']
-    report_df['Efficiency (%)'] = (report_df['Speedup'] / report_df['Workers (N)']) * 100
-    
+    for n in worker_counts:
+        spark_job = SparkSession.builder.master(f"local[{n}]").appName(f"ML_Job_{n}").getOrCreate()
+        try:
+            df_job = spark_job.read.csv(file_path, header=True, inferSchema=True).dropna()
+            assembler = VectorAssembler(inputCols=numeric_cols[:2], outputCol="features")
+            ml_data = assembler.transform(df_job).select("features", numeric_cols[0]).cache()
+            
+            start = time.time()
+            
+            # Job 1: Regression
+            DecisionTreeRegressor(featuresCol="features", labelCol=numeric_cols[0]).fit(ml_data)
+            # Job 2: KMeans
+            KMeans(k=3).fit(ml_data)
+            # Job 3: Summary Aggregation
+            summary = df_job.describe().toPandas()
+            summary.to_csv(f"{CLOUD_STORAGE}/summary_n{n}.csv")
+            # Job 4: FPGrowth (Frequent Itemsets)
+            fp_data = df_job.select(F.array(numeric_cols[0]).alias("items"))
+            model_fp = FPGrowth(itemsCol="items", minSupport=0.2).fit(fp_data)
+            
+            if n == 1: # Capture first run for screen display
+                fp_display_df = model_fp.freqItemsets.limit(10).toPandas()
+                fp_display_df.to_csv(f"{CLOUD_STORAGE}/fp_results.csv", index=False)
+
+            duration = time.time() - start
+            exp_results.append({"Workers": n, "Time (s)": round(duration, 3)})
+        finally:
+            spark_job.stop()
+
+    perf_df = pd.DataFrame(exp_results)
+    perf_df['Speedup'] = perf_df.iloc[0]['Time (s)'] / perf_df['Time (s)']
+    perf_df['Efficiency (%)'] = (perf_df['Speedup'] / perf_df['Workers']) * 100
+
     plt.figure(figsize=(8, 5))
-    plt.plot(report_df['Workers (N)'], report_df['Speedup'], marker='o', label="Measured Speedup")
-    plt.plot(report_df['Workers (N)'], report_df['Workers (N)'], '--', label="Ideal")
-    plt.legend(); plt.grid(True)
+    plt.plot(perf_df['Workers'], perf_df['Speedup'], marker='o', label="Actual")
+    plt.plot(perf_df['Workers'], perf_df['Workers'], '--', color='red', label="Ideal")
+    plt.xlabel("Cluster Size (N)"); plt.ylabel("Speedup (T1/Tn)"); plt.grid(True); plt.legend()
     plot_path = "/root/spark_project/scalability_plot.png"
     plt.savefig(plot_path)
+    plt.close()
     
-    return stats_summary, report_df, plot_path
+    return stats_df, fp_display_df, perf_df, plot_path
 
-with gr.Blocks() as demo:
-    gr.Markdown("# Cloud distributed ML service (pySpark)")
-    file_input = gr.File(label="Upload Dataset (CSV)")
-    run_btn = gr.Button("Start Distributed Processing", variant="primary")
+# --- FRONTEND layout ---
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# ☁️ Cloud Distributed Data Processing")
+    file_input = gr.File(label="Upload Dataset")
+    run_btn = gr.Button("🚀 Execute Jobs & Benchmark", variant="primary")
     
-    stats_out = gr.Markdown()
     with gr.Row():
-        table_out = gr.DataFrame(label="Execution Metrics")
-        plot_out = gr.Image(label="Scalability Graph")
+        with gr.Column():
+            gr.Markdown("### 📊 Descriptive Stats (Stored in Cloud)")
+            stats_out = gr.DataFrame()
+        with gr.Column():
+            gr.Markdown("### 🌿 FPGrowth Frequent Itemsets")
+            fp_out = gr.DataFrame()
 
-    run_btn.click(process_and_benchmark, inputs=file_input, outputs=[stats_out, table_out, plot_out])
+    with gr.Row():
+        perf_out = gr.DataFrame(label="Scalability Table")
+        plot_out = gr.Image(label="Speedup Analysis")
+
+    run_btn.click(process_and_benchmark, inputs=file_input, outputs=[stats_out, fp_out, perf_out, plot_out])
 
 demo.launch(server_name="0.0.0.0", server_port=7860)
