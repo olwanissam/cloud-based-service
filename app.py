@@ -47,25 +47,25 @@ def process_and_benchmark(file_obj):
     for n in worker_counts:
         spark = SparkSession.builder.master(f"local[{n}]").getOrCreate()
         
-        # Prepare Data
+        # prepare Data
         numeric_cols = [f for (f, dtype) in df.dtypes if dtype in ("int", "double", "float")]
         assembler = VectorAssembler(inputCols=numeric_cols[:-1], outputCol="features", handleInvalid="skip")
         ml_data = assembler.transform(df).select("features", numeric_cols[-1]).cache()
         
         start_time = time.time()
         
-        # --- JOB 1: Regression (Decision Tree) ---
+        # First Job: Regression (decision tree) -
         dt = DecisionTreeRegressor(featuresCol="features", labelCol=numeric_cols[-1])
         model_reg = dt.fit(ml_data)
         
-        # --- JOB 2: Clustering (KMeans) ---
+        # Second Job: clustering (KMeans) --
         kmeans = KMeans().setK(3).setSeed(1)
         model_km = kmeans.fit(ml_data)
         
-        # --- JOB 3: Time-Series/Aggregation Summary ---
+        # Third Job: Time-Series --
         summary = df.describe().toPandas()
         
-        # --- JOB 4: Frequent Itemsets (FPGrowth) ---
+        # Fouth job: Frequent Itemsets
         # Note: We simulate this by grouping a numeric col into 'items'
         fp_data = df.select(F.array(numeric_cols[0]).alias("items"))
         fp = FPGrowth(itemsCol="items", minSupport=0.2, minConfidence=0.5)
@@ -93,7 +93,7 @@ def process_and_benchmark(file_obj):
     return stats_summary, report_df, plot_path
 
 with gr.Blocks() as demo:
-    gr.Markdown("# ☁️ Cloud Distributed ML Service (PySpark)")
+    gr.Markdown("# Cloud distributed ML service (pySpark)")
     file_input = gr.File(label="Upload Dataset (CSV)")
     run_btn = gr.Button("Start Distributed Processing", variant="primary")
     
